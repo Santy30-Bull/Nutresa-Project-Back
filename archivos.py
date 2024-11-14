@@ -1,8 +1,12 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-import pandas as pd
-import os
-from typing import List, Dict, Any
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+import os, re
+import json
+from typing import Dict
+import re
+from pathlib import Path
+from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -20,52 +24,89 @@ app.add_middleware(
 
 # Crear un directorio para almacenar los archivos si no existe
 UPLOAD_DIR = "uploads"
+USER_DIR = "users"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(USER_DIR, exist_ok=True)
 
-# Ruta para subir archivos
-@app.post("/upload/")
-async def upload_file(files: List[UploadFile] = File(...)):
-    file_names = []
-    
-    for file in files:
-        if not (file.filename.endswith(".csv") or file.filename.endswith(".xlsx")):
-            raise HTTPException(status_code=400, detail="Solo se aceptan archivos CSV o Excel")
+# Archivo JSON para almacenar usuarios en la carpeta users
+USERS_FILE = os.path.join(USER_DIR, "users.json")
+Path(USERS_FILE).touch(exist_ok=True)  # Crear el archivo si no existe
 
-        # Guardar el archivo en el sistema de archivos
-        file_location = os.path.join(UPLOAD_DIR, file.filename)
-        with open(file_location, "wb") as buffer:
-            buffer.write(await file.read())  # Leer y escribir el archivo en el disco
+class UserCredentials(BaseModel):
+    username: str
+    password: str
 
-        file_names.append(file.filename)  # Agregar el nombre del archivo a la lista
+# Función para cargar usuarios desde el archivo JSON
+def load_users() -> Dict[str, str]:
+    with open(USERS_FILE, "r") as file:
+        try:
+            users = json.load(file)
+        except json.JSONDecodeError:
+            users = {}
+    return users
 
-    return {
-        "message": "Archivo(s) procesado(s) y guardado(s) correctamente",
-        "files": file_names
-    }
+# Función para guardar usuarios en el archivo JSON
+def save_users(users: Dict[str, str]):
+    with open(USERS_FILE, "w") as file:
+        json.dump(users, file)
 
-# Ruta para obtener datos de un archivo por su nombre
-@app.get("/file-data/{file_name}")
-async def get_file_data(file_name: str) -> Dict[str, Any]:
-    file_location = os.path.join(UPLOAD_DIR, file_name)
+# Validar formato de correo electrónico
+def validate_email(email: str) -> bool:
+    regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(regex, email) is not None
 
-    # Verificar si el archivo existe
-    if not os.path.exists(file_location):
-        raise HTTPException(status_code=404, detail="Archivo no encontrado")
+# Validar contraseña (mínimo 6 caracteres, al menos un número y un carácter especial)
+def validate_password(password: str) -> bool:
+    regex = r'^(?=.*\d)(?=.*[!@#$%^&*])(?=.*[A-Za-z]).{6,}$'
+    return re.match(regex, password) is not None
 
-    # Leer el archivo usando pandas para obtener encabezados y datos
-    if file_name.endswith(".csv"):
-        df = pd.read_csv(file_location)
-    elif file_name.endswith(".xlsx"):
-        df = pd.read_excel(file_location)
+# Ruta para registrar un nuevo usuario
+@app.post("/register")
+async def register(credentials: UserCredentials):
+    # Validar formato de email y contraseña
+    if not validate_email(credentials.username):
+        raise HTTPException(status_code=400, detail="Correo electrónico inválido")
+    if not validate_password(credentials.password):
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 6 caracteres, un número y un carácter especial.")
 
-    # Obtener los nombres de los encabezados
-    headers = df.columns.tolist()  # Obtener los nombres de las columnas
-    data = df.to_dict(orient='records')  # Convertir el DataFrame a un diccionario
+    users = load_users()
 
-    return {
-        "headers": headers,
-        "data": data
-    }
+    if credentials.username in users:
+        raise HTTPException(status_code=400, detail="El usuario ya existe")
+
+    # Guardar la contraseña en texto claro sin encriptación
+    users[credentials.username] = credentials.password
+
+    save_users(users)
+    return {"message": "Usuario registrado con éxito"}
+
+# Ruta para iniciar sesión
+@app.post("/login")
+async def login_user(credentials: HTTPBasicCredentials = Depends(HTTPBasic())):
+    users = load_users()
+
+    # Verificar si el usuario existe y comparar la contraseña en texto claro
+    if credentials.username not in users or credentials.password != users[credentials.username]:
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+
+    return {"message": f"Bienvenido, {credentials.username}!"}
+
+# Ruta para obtener o crear un usuario (esto podría no ser necesario)
+@app.get("/users/{username}")
+async def get_or_create_user(username: str):
+    users = load_users()
+
+    # Si el usuario existe, lo devolvemos
+    if username in users:
+        return {"message": f"Usuario '{username}' encontrado", "username": username}
+
+    # Si no existe, lo creamos con una contraseña predeterminada
+    default_password = "password123"
+    users[username] = default_password
+    save_users(users)
+
+    return {"message": f"Usuario '{username}' creado automáticamente", "username": username, "password": default_password}
+
 
 # Ruta para listar archivos guardados
 @app.get("/files/")
