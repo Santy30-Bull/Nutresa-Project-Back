@@ -2,3 +2,7 @@
 /uploads
 /__pycache__
 /users
+
+*.xlsx
+*.csv
+.env

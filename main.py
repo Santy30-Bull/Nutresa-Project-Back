@@ -1,10 +1,14 @@
 from fastapi import FastAPI, HTTPException, Depends, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import HTMLResponse
+import subprocess
 import os
+from dotenv import load_dotenv
 import re
 import json
 import pandas as pd
+import plotly.express as px
 import bcrypt
 from typing import Dict, Any, List
 from pathlib import Path
@@ -12,9 +16,12 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
+# Cargar variables del archivo .env
+load_dotenv()
+
 # Configuración de CORS
 origins = [
-    "http://localhost:5173",  # Origen de tu frontend
+    os.getenv("ORIGIN")  # Origen del frontend
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -25,7 +32,7 @@ app.add_middleware(
 )
 
 # Crear un directorio para almacenar los archivos si no existe
-UPLOAD_DIR = "uploads"
+UPLOAD_DIR = "DataBank"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Directores y archivos
@@ -212,6 +219,197 @@ async def delete_all_files():
             return {"message": "Todos los archivos han sido eliminados correctamente"}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+        
+
+# Para los modelos de Coffee
+
+@app.get("/coffee_price_plot", response_class=HTMLResponse)
+async def coffee_price_plot():
+    try:
+        # Ejecutar el script de Python Coffee_price.py para generar el archivo .xlsx
+        print("Ejecutando el script Coffee_price.py...")
+        result = subprocess.run(["python", "Coffee/Coffee_price.py"], check=True, capture_output=True)
+        print(f"Resultado de la ejecución: {result.stdout.decode()}")
+        
+        # Verificar si hubo un error en la ejecución
+        if result.returncode != 0:
+            raise Exception(f"Error en la ejecución de Coffee_price.py: {result.stderr.decode()}")
+
+        # Leer el archivo generado por el script
+        print("Leyendo el archivo de predicción generado...")
+        prediction_ml_1 = pd.read_excel('./Predictions/coffee_price_prediction.xlsx')
+
+        # Eliminar cualquier columna no útil como 'Unnamed'
+        prediction_ml_1 = prediction_ml_1.loc[:, ~prediction_ml_1.columns.str.contains('^Unnamed')]
+
+        if prediction_ml_1.empty:
+            raise ValueError("El archivo de predicción está vacío o no se pudo leer correctamente.")
+        print(f"Datos de predicción cargados: {prediction_ml_1.head()}")
+
+        # Realizar el renombrado de las columnas
+        prediction_ml_1 = prediction_ml_1.rename(columns={'Predict': 'Precio', 'Date': 'Date_2'})
+        print(f"Datos de predicción después del renombrado: {prediction_ml_1.head()}")
+
+        # Reemplazar NaN por 0 en las columnas correspondientes
+        prediction_ml_1['Precio'] = prediction_ml_1['Precio'].fillna(0)
+        prediction_ml_1['Date_2'] = prediction_ml_1['Date_2'].fillna(0)
+
+        # Cargar los datos de materia prima
+        print("Cargando datos de materia prima...")
+        materia_prima = pd.read_excel('./DataBank/materia_prima.xlsx', decimal=',', header=0, index_col=0)
+        materia_prima_reset = materia_prima.reset_index()
+        coffee_price = materia_prima_reset[['Date', 'Precio_cafe']].set_index('Date')
+
+        # Reemplazar NaN en los datos de coffee_price
+        coffee_price['Precio_cafe'] = coffee_price['Precio_cafe'].fillna(0)
+        print(f"Primeras filas de coffee_price: {coffee_price.head()}")
+
+        # Concatenar los datos reales con los predichos
+        print("Concatenando los datos reales con los predichos...")
+        concat_df = pd.concat([coffee_price, prediction_ml_1], axis=0)
+        concat_df = concat_df.reset_index(drop=True)  # Evitar columna extra 'index'
+        print(f"Datos concatenados: {concat_df.head()}")
+    
+        # Establecer el índice como un rango de fechas
+        print("Estableciendo el índice de fechas...")
+        concat_df_i = pd.date_range(start='2012-01-31', end='2030-12-31', freq='ME')
+        concat_df.set_index(concat_df_i, inplace=True)
+        print(f"Datos con índice de fechas head: {concat_df.head()}")
+        print(f"Datos con índice de fechas tail: {concat_df.tail()}")
+
+        # Crear el gráfico interactivo con Plotly
+        print("Generando gráfico interactivo con Plotly...")
+        fig = px.line(concat_df, x=concat_df.index, y=["Precio_cafe", "Precio"], template='plotly_white')
+        
+        # Actualizar los nombres de los ejes
+        fig.update_layout(
+            xaxis_title="Date",  # Cambiar nombre al eje X
+            yaxis_title="Values"  # Cambiar nombre al eje Y
+        )
+
+        # Convertir el gráfico a HTML interactivo
+        print("Generando HTML interactivo del gráfico...")
+        plot_html = fig.to_html(full_html=False)  # Generamos el HTML sin la envoltura completa
+
+        # Devolver el gráfico interactivo en el HTML
+        return HTMLResponse(content=plot_html)
+
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return HTMLResponse(f"<h1>Error: {str(e)}</h1>", status_code=500)
+
+@app.get("/coffee_consumption_plot", response_class=HTMLResponse)
+async def coffee_price_plot():
+    try:
+        # Ejecutar el script de Python Coffee_consumption.py para generar el archivo .xlsx
+        print("Ejecutando el script Coffee_consumption.py...")
+        result = subprocess.run(["python", "Coffee/Coffee_consumption.py"], check=True, capture_output=True)
+        print(f"Resultado de la ejecución: {result.stdout.decode()}")
+        
+        # Verificar si hubo un error en la ejecución
+        if result.returncode != 0:
+            raise Exception(f"Error en la ejecución de Coffee_consumption.py: {result.stderr.decode()}")
+
+        # Leer el archivo generado por el script
+        print("Leyendo el archivo de predicción generado...")
+        prediction_ml_1 = pd.read_excel('./Predictions/coffee_prediction.xlsx')
+
+        # Eliminar cualquier columna no útil como 'Unnamed'
+        prediction_ml_1 = prediction_ml_1.loc[:, ~prediction_ml_1.columns.str.contains('^Unnamed')]
+
+        if prediction_ml_1.empty:
+            raise ValueError("El archivo de predicción está vacío o no se pudo leer correctamente.")
+        print(f"Datos de predicción cargados: {prediction_ml_1.head()}")
+
+        # Cargar los datos de materia prima
+        print("Cargando datos de materia prima...")
+        materia_prima = pd.read_excel('./DataBank/materia_prima.xlsx', decimal=',', header=0, index_col=0)
+        materia_prima_reset = materia_prima.reset_index()
+        coffee = materia_prima_reset[['Date', 'cantidad_cafe']].set_index('Date')
+        print(f"Primeras filas de coffee_price: {coffee.head()}")
+
+        # Concatenar los datos reales con los predichos
+        print("Concatenando los datos reales con los predichos...")
+        concat_df = pd.concat([coffee, prediction_ml_1], axis=0)
+        concat_df = concat_df.reset_index(drop=True)  # Evitar columna extra 'index'
+        print(f"Datos concatenados: {concat_df.head()}")
+    
+        # Establecer el índice como un rango de fechas
+        print("Estableciendo el índice de fechas...")
+        concat_df_i = pd.date_range(start='2012-01-31', end='2030-12-31', freq='ME')
+        concat_df.set_index(concat_df_i, inplace=True)
+        print(f"Datos con índice de fechas head: {concat_df.head()}")
+        print(f"Datos con índice de fechas tail: {concat_df.tail()}")
+
+        # Crear el gráfico interactivo con Plotly
+        print("Generando gráfico interactivo con Plotly...")
+        fig = px.line(concat_df, x=concat_df.index, y=["cantidad_cafe", "Predict"], template='plotly_white')
+        
+        # Actualizar los nombres de los ejes
+        fig.update_layout(
+            xaxis_title="Date",  # Cambiar nombre al eje X
+            yaxis_title="Values"  # Cambiar nombre al eje Y
+        )
+
+        # Convertir el gráfico a HTML interactivo
+        print("Generando HTML interactivo del gráfico...")
+        plot_html = fig.to_html(full_html=False)  # Generamos el HTML sin la envoltura completa
+
+        # Devolver el gráfico interactivo en el HTML
+        return HTMLResponse(content=plot_html)
+
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return HTMLResponse(f"<h1>Error: {str(e)}</h1>", status_code=500)
+
+@app.get("/coffee_cost_analysis_plot", response_class=HTMLResponse)
+async def coffee_price_plot():
+    try:
+        # Ejecutar el script de Python Coffee_cost_analysis.py para generar el archivo .xlsx
+        print("Ejecutando el script Coffee_cost_analysis.py...")
+        result = subprocess.run(["python", "Coffee/Coffee_cost_analysis.py"], check=True, capture_output=True)
+        print(f"Resultado de la ejecución: {result.stdout.decode()}")
+        
+        # Verificar si hubo un error en la ejecución
+        if result.returncode != 0:
+            raise Exception(f"Error en la ejecución de Coffee_cost_analysis.py: {result.stderr.decode()}")
+
+        # Leer el archivo generado por el script
+        print("Leyendo el archivo de predicción generado...")
+        prediction_ml_1 = pd.read_excel('./Cost_Analysis/total_cost_coffee.xlsx')
+
+        # Eliminar cualquier columna no útil como 'Unnamed'
+        prediction_ml_1 = prediction_ml_1.loc[:, ~prediction_ml_1.columns.str.contains('^Unnamed')]
+
+        if prediction_ml_1.empty:
+            raise ValueError("El archivo de predicción está vacío o no se pudo leer correctamente.")
+        print(f"Datos de predicción cargados: {prediction_ml_1.head()}")
+
+        # Establecer el índice como un rango de fechas
+        print("Estableciendo el índice de fechas...")
+        concat_df_i = pd.date_range(start='2012-01-31', end='2030-12-31', freq='ME')
+        prediction_ml_1.set_index(concat_df_i, inplace=True)
+
+        # Crear el gráfico interactivo con Plotly
+        print("Generando gráfico interactivo con Plotly...")
+        fig = px.line(prediction_ml_1, x=prediction_ml_1.index, y=["costo_historico", "predict_cost"], template='plotly_white')
+        
+        # Actualizar los nombres de los ejes
+        fig.update_layout(
+            xaxis_title="Date",  # Cambiar nombre al eje X
+            yaxis_title="Values"  # Cambiar nombre al eje Y
+        )
+
+        # Convertir el gráfico a HTML interactivo
+        print("Generando HTML interactivo del gráfico...")
+        plot_html = fig.to_html(full_html=False)  # Generamos el HTML sin la envoltura completa
+
+        # Devolver el gráfico interactivo en el HTML
+        return HTMLResponse(content=plot_html)
+
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return HTMLResponse(f"<h1>Error: {str(e)}</h1>", status_code=500)
 
 
 # Se corre usando el comando uvicorn main:app --reload
